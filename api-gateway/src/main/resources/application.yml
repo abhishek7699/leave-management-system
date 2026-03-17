@@ -1,0 +1,45 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: 6379
+
+  cloud:
+    gateway:
+      routes:
+        - id: employee-service
+          uri: ${EMPLOYEE_SERVICE_URL:http://localhost:8081}
+          predicates:
+            - Path=/api/employees/**
+          filters:
+            - AuthFilter
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                key-resolver: "#{@employeeKeyResolver}"
+
+        - id: leave-service
+          uri: ${LEAVE_SERVICE_URL:http://localhost:8082}
+          predicates:
+            - Path=/api/leaves/**
+          filters:
+            - AuthFilter
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                key-resolver: "#{@employeeKeyResolver}"
+
+jwt:
+  secret: ${JWT_SECRET:bXlzdXBlcnNlY3JldGtleW15c3VwZXJzZWNyZXRrZXk=}
+
+logging:
+  level:
+    org.springframework.cloud.gateway: INFO

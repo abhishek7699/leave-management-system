@@ -1,0 +1,156 @@
+version: "3.9"
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  employee-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: employee_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - employee-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d employee_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  leave-db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: leave_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - leave-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d leave_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Services ─────────────────────────────────────────────────────────────────
+
+  employee-service:
+    build:
+      context: .
+      dockerfile: employee-service/Dockerfile
+    ports:
+      - "8081:8081"
+    depends_on:
+      employee-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://employee-db:5432/employee_db
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      REDIS_HOST: redis
+      KAFKA_BOOTSTRAP: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:-bXlzdXBlcnNlY3JldGtleW15c3VwZXJzZWNyZXRrZXk=}
+      JWT_EXPIRY_MS: ${JWT_EXPIRY_MS:-86400000}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  leave-service:
+    build:
+      context: .
+      dockerfile: leave-service/Dockerfile
+    ports:
+      - "8082:8082"
+    depends_on:
+      leave-db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      employee-service:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:postgresql://leave-db:5432/leave_db
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      KAFKA_BOOTSTRAP: kafka:9092
+      JWT_SECRET: ${JWT_SECRET:-bXlzdXBlcnNlY3JldGtleW15c3VwZXJzZWNyZXRrZXk=}
+      EMPLOYEE_SERVICE_URL: http://employee-service:8081
+      LEAVE_SERVICE_URL: http://leave-service:8082
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      employee-service:
+        condition: service_healthy
+      leave-service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_HOST: redis
+      EMPLOYEE_SERVICE_URL: http://employee-service:8081
+      LEAVE_SERVICE_URL: http://leave-service:8082
+      JWT_SECRET: ${JWT_SECRET:-bXlzdXBlcnNlY3JldGtleW15c3VwZXJzZWNyZXRrZXk=}
+
+volumes:
+  employee-db-data:
+  leave-db-data:
